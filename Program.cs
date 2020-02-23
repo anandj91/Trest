@@ -1,10 +1,9 @@
 ﻿using System;
-using System.Collections;
 using System.IO;
-using System.Collections.Generic;
 using System.Linq;
 using System.Reactive.Linq;
 using Microsoft.StreamProcessing;
+using System.Diagnostics;
 
 namespace Trest
 {
@@ -72,7 +71,7 @@ namespace Trest
         private Signal ToSignal(string line)
         {
             var fs = line.Split(",");
-            return new Signal(long.Parse(fs[0]), float.Parse(fs[1]));
+            return new Signal(this.counter, float.Parse(fs[1]));
         }
 
         public Signal GetItem()
@@ -100,26 +99,39 @@ namespace Trest
 
         private static IStreamable<Empty, Signal> getStream(IObservable<Signal> obs)
         {
-            return obs.Select(e => StreamEvent.CreateInterval(e.ts, e.ts + 1, e))
+            return obs.Select(e => StreamEvent.CreateInterval(e.ts, e.ts+1, e))
+            //return obs.Select(e => StreamEvent.CreateInterval(StreamEvent.MinSyncTime, StreamEvent.InfinitySyncTime, e))
                 .ToStreamable(DisorderPolicy.Drop());
         }
 
+        public const long SIZE = 10000000;
+
         public static void Main(string[] args)
         {
-            var ecgSignalStreamable = getStream(getData("ecg", 10));
-            var abpSignalStreamable = getStream(getData("abp", 10));
-            var poSignalStreamable = getStream(getData("po", 10));
+            Stopwatch sw0 = new Stopwatch();
+            sw0.Start();
+            var ecgSignalStreamable = getStream(getData("ecg", SIZE));
+            var abpSignalStreamable = getStream(getData("abp", SIZE));
+            var poSignalStreamable = getStream(getData("po", SIZE));
+            sw0.Stop();
+            Console.WriteLine("Cache Elapsed = {0}", sw0.Elapsed.TotalSeconds);
+
+            Stopwatch sw = new Stopwatch();
+            sw.Start();
 
             var joinedSignal = ecgSignalStreamable.Join(abpSignalStreamable,
-                                    e=> e.ts, e=> e.ts, (l, r) => new { l.ts, v1=l.val, v2=r.val})
-                                        .Join(poSignalStreamable, e => e.ts, e => e.ts, 
+                                    e => e.ts, e => e.ts, (l, r) => new { l.ts, v1 = l.val, v2 = r.val })
+                                        .Join(poSignalStreamable, e => e.ts, e => e.ts,
                                             (l, r) => new JoinedSignal(l.ts, l.v1, l.v2, r.val));
 
             IObservable<StreamEvent<JoinedSignal>> passthroughSignalStreamEventObservable =
                 joinedSignal.ToStreamEventObservable();
             passthroughSignalStreamEventObservable
                 .Where(e => e.IsData)
-                .ForEachAsync(e => WriteEvent(e)).Wait();
+                //.ForEachAsync(e => WriteEvent(e))
+                .Wait();
+            sw.Stop();
+            Console.WriteLine("Query Elapsed = {0}\t Throughput = {1}", sw.Elapsed.TotalSeconds, SIZE / sw.Elapsed.TotalSeconds);
         }
     }
 }
